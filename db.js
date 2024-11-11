@@ -1,53 +1,43 @@
-import mysql from "mysql";
+import { Client } from "pg";
 
-export const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "0103",
-  database: "crud_tasks",
-  port: 3308,
+// Cria uma nova instância do cliente PostgreSQL utilizando variáveis de ambiente
+const client = new Client({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
+  port: process.env.DB_PORT,
+  ssl: {
+    rejectUnauthorized: false, // Necessário para conexões seguras
+  },
 });
 
-// Estabelece a conexão e trata possíveis erros
-db.connect((err) => {
+// Conecta ao banco de dados e trata possíveis erros
+client.connect((err) => {
   if (err) {
     console.error("Erro ao conectar ao banco de dados:", err);
-    if (err.code === "PROTOCOL_CONNECTION_LOST") {
-      console.error("Conexão com o banco de dados foi perdida");
-    } else if (err.code === "ER_CON_COUNT_ERROR") {
-      console.error("O banco de dados tem muitas conexões");
-    } else if (err.code === "ECONNREFUSED") {
-      console.error("Conexão com o banco de dados foi recusada");
-    }
-    return;
+    process.exit(1);
+  } else {
+    console.log("Conectado ao banco de dados PostgreSQL com sucesso!");
   }
-  console.log("Conectado ao banco de dados MySQL com sucesso!");
 });
 
 // Tratamento de erro para perda de conexão
-db.on("error", (err) => {
+client.on("error", (err) => {
   console.error("Erro na conexão com o banco de dados:", err);
-  if (err.code === "PROTOCOL_CONNECTION_LOST") {
+  if (err.code === "ECONNRESET" || err.code === "EHOSTUNREACH") {
     console.error(
-      "Conexão perdida com o banco de dados. Tentando reconectar..."
+      "Conexão com o banco de dados foi perdida. Tentando reconectar..."
     );
-
-    // Função para tentar reconexão
-    const tryReconnect = () => {
-      db.connect((err) => {
-        if (err) {
-          console.error("Tentativa de reconexão falhou:", err);
-          // Tenta reconectar novamente após 5 segundos
-          setTimeout(tryReconnect, 5000);
-        } else {
-          console.log("Reconexão bem-sucedida!");
-        }
-      });
-    };
-
-    // Inicia a tentativa de reconexão
-    tryReconnect();
+    // Tente reconectar após um intervalo
+    setTimeout(() => {
+      client
+        .connect()
+        .catch((error) => console.error("Falha na reconexão:", error));
+    }, 5000);
   } else {
     throw err;
   }
 });
+
+export default client;
