@@ -1,18 +1,11 @@
-import { db } from "../db.js";
+import client from "../db.js";
 
 // Função para recuperar todas as tarefas ordenadas por display_order
 export const getTasks = async (_, res) => {
   try {
     const query = "SELECT * FROM tasks ORDER BY display_order ASC";
-
-    const data = await new Promise((resolve, reject) => {
-      db.query(query, (err, result) => {
-        if (err) reject(err);
-        resolve(result);
-      });
-    });
-
-    return res.status(200).json(data);
+    const { rows } = await client.query(query);
+    return res.status(200).json(rows);
   } catch (error) {
     console.error("Erro ao recuperar tarefas:", error);
     return res.status(500).json({
@@ -27,34 +20,21 @@ export const createTask = async (req, res) => {
     const { description, value, deadline } = req.body;
 
     // Obtém o próximo valor de display_order
-    const [orderResult] = await new Promise((resolve, reject) => {
-      db.query(
-        "SELECT COALESCE(MAX(display_order), 0) + 1 AS nextOrder FROM tasks",
-        (err, result) => {
-          if (err) reject(err);
-          resolve(result);
-        }
-      );
-    });
-
-    const nextOrder = orderResult.nextOrder;
+    const orderResult = await client.query(
+      "SELECT COALESCE(MAX(display_order), 0) + 1 AS nextOrder FROM tasks"
+    );
+    const nextOrder = orderResult.rows[0].nextorder;
 
     // Insere a nova tarefa
-    const result = await new Promise((resolve, reject) => {
-      db.query(
-        "INSERT INTO tasks (description, value, deadline, display_order) VALUES (?, ?, ?, ?)",
-        [description, value, deadline, nextOrder],
-        (err, data) => {
-          if (err) reject(err);
-          resolve(data);
-        }
-      );
-    });
+    const result = await client.query(
+      "INSERT INTO tasks (description, value, deadline, display_order) VALUES ($1, $2, $3, $4) RETURNING id",
+      [description, value, deadline, nextOrder]
+    );
 
-    console.log("Tarefa criada com sucesso:", result.insertId);
+    console.log("Tarefa criada com sucesso:", result.rows[0].id);
     return res.status(201).json({
       message: "Tarefa criada com sucesso",
-      taskId: result.insertId,
+      taskId: result.rows[0].id,
     });
   } catch (error) {
     console.error("Erro ao criar tarefa:", error);
@@ -71,21 +51,20 @@ export const updateTaskData = async (req, res) => {
     const { id } = req.params;
     const { description, value, deadline } = req.body;
 
-    // Consulta para atualizar apenas os dados, sem o display_order
-    const result = await new Promise((resolve, reject) => {
-      const query = `
-        UPDATE tasks 
-        SET description = ?, value = ?, deadline = ? 
-        WHERE id = ?
-      `;
+    const query = `
+      UPDATE tasks 
+      SET description = $1, value = $2, deadline = $3 
+      WHERE id = $4
+    `;
 
-      db.query(query, [description, value, deadline, id], (err, result) => {
-        if (err) reject(err);
-        resolve(result);
-      });
-    });
+    const result = await client.query(query, [
+      description,
+      value,
+      deadline,
+      id,
+    ]);
 
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       console.log("Tarefa não encontrada para o ID:", id);
       return res.status(404).json({ message: "Tarefa não encontrada." });
     }
@@ -105,16 +84,11 @@ export const updateTaskData = async (req, res) => {
 export const deleteTask = async (req, res) => {
   try {
     const { id } = req.params;
-    const query = "DELETE FROM tasks WHERE id = ?";
+    const query = "DELETE FROM tasks WHERE id = $1";
 
-    const result = await new Promise((resolve, reject) => {
-      db.query(query, [id], (err, result) => {
-        if (err) reject(err);
-        resolve(result);
-      });
-    });
+    const result = await client.query(query, [id]);
 
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       console.log("Tarefa não encontrada para o ID:", id);
       return res.status(404).json({ message: "Tarefa não encontrada." });
     }
@@ -134,15 +108,8 @@ export const deleteTask = async (req, res) => {
 export const getTaskCount = async (_, res) => {
   try {
     const query = "SELECT COUNT(*) AS count FROM tasks";
-
-    const data = await new Promise((resolve, reject) => {
-      db.query(query, (err, result) => {
-        if (err) reject(err);
-        resolve(result);
-      });
-    });
-
-    return res.status(200).json(data[0]);
+    const { rows } = await client.query(query);
+    return res.status(200).json(rows[0]);
   } catch (error) {
     console.error("Erro ao contar tarefas:", error);
     return res.status(500).json({
@@ -164,15 +131,10 @@ export const searchTasks = async (req, res) => {
       });
     }
 
-    const searchQuery = "SELECT * FROM tasks WHERE description LIKE ?";
-    const results = await new Promise((resolve, reject) => {
-      db.query(searchQuery, [`%${searchTerm}%`], (err, results) => {
-        if (err) reject(err);
-        resolve(results);
-      });
-    });
+    const searchQuery = "SELECT * FROM tasks WHERE description ILIKE $1";
+    const { rows } = await client.query(searchQuery, [`%${searchTerm}%`]);
 
-    return res.status(200).json(results);
+    return res.status(200).json(rows);
   } catch (error) {
     console.error("Erro ao buscar tarefas:", error);
     return res.status(500).json({
@@ -189,33 +151,25 @@ export const updateTaskOrder = async (req, res) => {
     const { newOrder } = req.body;
 
     // Verifica se a tarefa existe e obtém sua ordem atual
-    const checkTaskQuery = "SELECT display_order FROM tasks WHERE id = ?";
-    const [task] = await new Promise((resolve, reject) => {
-      db.query(checkTaskQuery, [id], (err, results) => {
-        if (err) reject(err);
-        resolve(results);
-      });
-    });
+    const checkTaskQuery = "SELECT display_order FROM tasks WHERE id = $1";
+    const taskResult = await client.query(checkTaskQuery, [id]);
 
-    if (!task) {
+    if (taskResult.rows.length === 0) {
       return res.status(404).json({ message: "Tarefa não encontrada" });
     }
 
-    const currentOrder = task.display_order;
+    const currentOrder = taskResult.rows[0].display_order;
 
     if (currentOrder === newOrder) {
       return res.status(200).json({ message: "Ordem não alterada" });
     }
 
     // Verifica se a nova ordem é válida
-    const [countResult] = await new Promise((resolve, reject) => {
-      db.query("SELECT COUNT(*) as total FROM tasks", (err, results) => {
-        if (err) reject(err);
-        resolve(results);
-      });
-    });
+    const countResult = await client.query(
+      "SELECT COUNT(*) as total FROM tasks"
+    );
+    const totalTasks = parseInt(countResult.rows[0].total);
 
-    const totalTasks = countResult.total;
     if (newOrder < 1 || newOrder > totalTasks) {
       return res.status(400).json({
         message: "Nova ordem inválida",
@@ -227,67 +181,41 @@ export const updateTaskOrder = async (req, res) => {
     const getAffectedTasksQuery = `
       SELECT id, display_order 
       FROM tasks 
-      WHERE display_order BETWEEN LEAST(?, ?) AND GREATEST(?, ?)
+      WHERE display_order BETWEEN LEAST($1, $2) AND GREATEST($1, $2)
       ORDER BY display_order ${currentOrder > newOrder ? "DESC" : "ASC"}
     `;
 
-    const affectedTasks = await new Promise((resolve, reject) => {
-      db.query(
-        getAffectedTasksQuery,
-        [currentOrder, newOrder, currentOrder, newOrder],
-        (err, results) => {
-          if (err) reject(err);
-          resolve(results);
-        }
-      );
-    });
+    const affectedTasks = await client.query(getAffectedTasksQuery, [
+      currentOrder,
+      newOrder,
+    ]);
 
     // Atualiza temporariamente a tarefa movida
-    await new Promise((resolve, reject) => {
-      db.query(
-        "UPDATE tasks SET display_order = ? WHERE id = ?",
-        [totalTasks + 1, id],
-        (err) => {
-          if (err) reject(err);
-          resolve();
-        }
-      );
-    });
+    await client.query("UPDATE tasks SET display_order = $1 WHERE id = $2", [
+      totalTasks + 1,
+      id,
+    ]);
 
     // Atualiza a ordem das tarefas afetadas
-    await Promise.all(
-      affectedTasks.map((task) => {
-        if (task.id === parseInt(id)) return Promise.resolve();
+    for (const task of affectedTasks.rows) {
+      if (task.id === parseInt(id)) continue;
 
-        const newPosition =
-          currentOrder < newOrder
-            ? task.display_order - 1
-            : task.display_order + 1;
+      const newPosition =
+        currentOrder < newOrder
+          ? task.display_order - 1
+          : task.display_order + 1;
 
-        return new Promise((resolve, reject) => {
-          db.query(
-            "UPDATE tasks SET display_order = ? WHERE id = ?",
-            [newPosition, task.id],
-            (err) => {
-              if (err) reject(err);
-              resolve();
-            }
-          );
-        });
-      })
-    );
+      await client.query("UPDATE tasks SET display_order = $1 WHERE id = $2", [
+        newPosition,
+        task.id,
+      ]);
+    }
 
     // Move a tarefa para posição final
-    await new Promise((resolve, reject) => {
-      db.query(
-        "UPDATE tasks SET display_order = ? WHERE id = ?",
-        [newOrder, id],
-        (err) => {
-          if (err) reject(err);
-          resolve();
-        }
-      );
-    });
+    await client.query("UPDATE tasks SET display_order = $1 WHERE id = $2", [
+      newOrder,
+      id,
+    ]);
 
     return res.status(200).json({
       message: "Ordem atualizada com sucesso",
